@@ -12,12 +12,12 @@ import requests
 # --- CONFIGURATION ---
 APP_NAME = "Figo"
 LOGO_FILENAME = "Figo Logo.png"
-ADMIN_PASSWORD = "admin123"
+ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
 
 # ⚠️ YOUR LIVE KEYS
-SUPABASE_URL = "https://sryvcuplpagtcnrnwsjz.supabase.co"
-SUPABASE_KEY = "sb_publishable_sz-4L9e9jjvksF_YpJGAlw_ThCUzA7N"
-GOOGLE_MAPS_API_KEY = "AIzaSyCZAKScxLoEkydVfa-a5XAqFIoAl-UNuP4"
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+GOOGLE_MAPS_API_KEY = st.secrets["GOOGLE_MAPS_API_KEY"]
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title=APP_NAME, layout="wide", page_icon="📍")
@@ -1066,4 +1066,5 @@ with tab_schedule:
                     <small><b>{item['engineer_name']}</b></small><br>
                     {content}
                 </div>
+
                 """, unsafe_allow_html=True)
