@@ -10,8 +10,8 @@ from datetime import datetime, date, timedelta
 import requests
 
 # --- CONFIGURATION ---
-APP_NAME = "Figo"
-LOGO_FILENAME = "Figo Logo.png"
+APP_NAME = "KartaFlow"
+LOGO_FILENAME = "KartaFlow Logo.png"
 ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
 
 # ⚠️ YOUR LIVE KEYS
@@ -389,7 +389,7 @@ def delete_record(table, record_id, record_ref=None, ref_col=None):
         return False
 
 def add_entry(table, name_col, name_val, postcode, company_id, desc=None, director=None, severity=None, pin_color=None, install_status=None):
-    geolocator = Nominatim(user_agent="figo_adder_v18")
+    geolocator = Nominatim(user_agent="kartaflow_adder_v18")
     try:
         loc = geolocator.geocode(postcode)
         if loc:
@@ -421,7 +421,7 @@ def add_entry(table, name_col, name_val, postcode, company_id, desc=None, direct
         return False, "Error", None
 
 def process_bulk_upload(df, type_flag, company_id):
-    geolocator = Nominatim(user_agent=f"figo_bulk_v18")
+    geolocator = Nominatim(user_agent=f"kartaflow_bulk_v18")
     progress_bar = st.progress(0)
     success_count = 0
     total = len(df)
@@ -598,7 +598,7 @@ with tab_map:
         
         # When Scan is clicked, update state and calculate routes ONCE
         if search and p_code:
-            geo = Nominatim(user_agent="figo_search_v18", timeout=10)
+            geo = Nominatim(user_agent="kartaflow_search_v18", timeout=10)
             try:
                 l = geo.geocode(p_code)
                 if l:
@@ -646,7 +646,7 @@ with tab_map:
         c1, c2 = st.columns([3, 1])
         new_stop = c1.text_input("Add Stop (Postcode)", key="route_input")
         if c2.button("Add Stop") and new_stop:
-            geo_r = Nominatim(user_agent="figo_route_v1")
+            geo_r = Nominatim(user_agent="kartaflow_route_v1")
             l_r = geo_r.geocode(new_stop)
             if l_r:
                 st.session_state.route_stops.append({'addr': new_stop, 'lat': l_r.latitude, 'lon': l_r.longitude})
@@ -664,7 +664,7 @@ with tab_map:
             if start_sel == "Custom...":
                 start_txt = st.text_input("Custom Start Postcode")
                 if start_txt:
-                    geo_s = Nominatim(user_agent="figo_start")
+                    geo_s = Nominatim(user_agent="kartaflow_start")
                     ls = geo_s.geocode(start_txt)
                     if ls: start_coords = (ls.latitude, ls.longitude)
             else:
@@ -1066,5 +1066,4 @@ with tab_schedule:
                     <small><b>{item['engineer_name']}</b></small><br>
                     {content}
                 </div>
-
                 """, unsafe_allow_html=True)
