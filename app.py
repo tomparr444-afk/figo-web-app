@@ -43,6 +43,8 @@ if 'route_stops' not in st.session_state: st.session_state.route_stops = []
 if 'cached_routes' not in st.session_state: st.session_state.cached_routes = []
 if 'theme_toggle' not in st.session_state: st.session_state.theme_toggle = False
 if 'selected_customer' not in st.session_state: st.session_state.selected_customer = None
+if 'recent_customers' not in st.session_state: st.session_state.recent_customers = []
+if 'main_menu' not in st.session_state: st.session_state.main_menu = "🏠 Dashboard"
 if 'cust_draft' not in st.session_state: 
     st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": ""}
 
@@ -437,13 +439,19 @@ with st.sidebar:
     st.markdown("---")
     
     # Quick Customer Search
+    def quick_search_callback():
+        val = st.session_state.quick_search_val
+        if val:
+            st.session_state.selected_customer = val
+            st.session_state.main_menu = "👥 Customers"
+            if val in st.session_state.recent_customers:
+                st.session_state.recent_customers.remove(val)
+            st.session_state.recent_customers.insert(0, val)
+            st.session_state.recent_customers = st.session_state.recent_customers[:3]
+
     if customers:
         search_options = [""] + [c['Name'] for c in customers]
-        quick_search = st.selectbox("🔍 Search Customer", search_options, help="Instantly open a customer profile")
-        if quick_search:
-            st.session_state.selected_customer = quick_search
-        elif 'selected_customer' in st.session_state and st.session_state.selected_customer == "":
-            st.session_state.selected_customer = None
+        st.selectbox("🔍 Quick Search", search_options, key="quick_search_val", on_change=quick_search_callback, help="Instantly open a customer profile")
 
     st.markdown("---")
     
@@ -455,11 +463,7 @@ with st.sidebar:
         "👥 Customers",
         "📅 Schedule Work",
         "⬆️ Data Upload"
-    ], label_visibility="collapsed")
-    
-    # Override page if a customer is selected via quick search
-    if st.session_state.selected_customer:
-        page = "👥 Customers"
+    ], label_visibility="collapsed", key="main_menu")
     
     st.markdown("---")
     if st.session_state.is_admin:
@@ -733,7 +737,7 @@ elif page == "🔧 Maintenance":
             sev = j.get('severity') or 'Low'
             color = "green" if "low" in sev.lower() else "orange" if "medium" in sev.lower() else "red"
             c4.markdown(f":{color}[{sev}]")
-            if c5.button("Delete", key=f"del_{j['id']}", type="primary"):
+            if c5.button("Delete", key=f"del_{j['id']}", type="primary", help="Cancels job and removes from diary"):
                 if delete_record("Jobs", j['id'], j['ref'], "job_ref"):
                     st.success("Deleted & Cancelled!")
                     time.sleep(0.5); st.rerun()
@@ -782,6 +786,8 @@ elif page == "👥 Customers":
         with c_right:
             if st.button("⬅️ Back to List", type="primary", use_container_width=True):
                 st.session_state.selected_customer = None
+                if 'quick_search_val' in st.session_state: st.session_state.quick_search_val = ""
+                if 'profile_select_val' in st.session_state: st.session_state.profile_select_val = "-- Select a Customer --"
                 st.rerun()
                 
         # Find customer record
@@ -834,12 +840,34 @@ elif page == "👥 Customers":
         
         # Select customer from list
         if customers:
-            st.subheader("Select a Customer")
+            st.subheader("🔍 Find Customer")
             cust_opts = ["-- Select a Customer --"] + [c['Name'] for c in customers]
-            sel = st.selectbox("Open Profile", cust_opts, label_visibility="collapsed")
-            if sel and sel != "-- Select a Customer --":
-                st.session_state.selected_customer = sel
-                st.rerun()
+            
+            def profile_select_callback():
+                val = st.session_state.profile_select_val
+                if val and val != "-- Select a Customer --":
+                    st.session_state.selected_customer = val
+                    if val in st.session_state.recent_customers:
+                        st.session_state.recent_customers.remove(val)
+                    st.session_state.recent_customers.insert(0, val)
+                    st.session_state.recent_customers = st.session_state.recent_customers[:3]
+
+            st.selectbox("Open Profile", cust_opts, key="profile_select_val", on_change=profile_select_callback, label_visibility="collapsed")
+            
+            st.divider()
+            st.subheader("🕒 Recently Viewed")
+            if st.session_state.recent_customers:
+                for rc in st.session_state.recent_customers:
+                    if st.button(f"👤 {rc}", key=f"rec_{rc}", use_container_width=True):
+                        st.session_state.selected_customer = rc
+                        if rc in st.session_state.recent_customers:
+                            st.session_state.recent_customers.remove(rc)
+                        st.session_state.recent_customers.insert(0, rc)
+                        st.session_state.recent_customers = st.session_state.recent_customers[:3]
+                        st.rerun()
+            else:
+                st.info("No recent customers. Search for one above to get started.")
+            
             st.divider()
         
         st.subheader("🤖 Auto-Find Company Info (AI)")
