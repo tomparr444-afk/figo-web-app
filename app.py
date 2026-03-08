@@ -63,7 +63,8 @@ if not st.session_state.logged_in:
     st.markdown("<style>.stApp { background-color: #050505; color: #ffffff; }</style>", unsafe_allow_html=True)
     login_holder = st.empty() 
     with login_holder.container():
-        col1, col2, col3 = st.columns([1,2,1])
+        # Optimized for mobile viewing (wider middle column)
+        col1, col2, col3 = st.columns([1, 8, 1])
         with col2:
             st.markdown(f"<h1 style='text-align: center; color: white;'>🔐 {APP_NAME} Login</h1>", unsafe_allow_html=True)
             with st.form("login"):
@@ -81,10 +82,8 @@ if not st.session_state.logged_in:
                     else: st.error("Access Denied")
     st.stop()
 
-# --- TOP BAR / THEME TOGGLE ---
-c1, c2 = st.columns([9, 1])
-with c2:
-    is_light = st.toggle("☀️ Light Mode", key="theme_toggle")
+# Read theme from session state so CSS updates before the sidebar renders
+is_light = st.session_state.theme_toggle
 
 # --- 🎨 DYNAMIC CSS ---
 if is_light:
@@ -144,6 +143,31 @@ st.markdown(f"""
     /* Hide Default Branding */
     #MainMenu {{visibility: hidden;}}
     footer {{visibility: hidden;}}
+
+    /* 📱 MOBILE RESPONSIVE FIXES */
+    @media (max-width: 768px) {{
+        /* Reduce overall padding on mobile */
+        .block-container {{
+            padding-top: 2rem !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }}
+        
+        /* Stack metrics properly */
+        div[data-testid="metric-container"] {{
+            margin-bottom: 10px;
+        }}
+
+        /* Make dataframes scroll horizontally */
+        div[data-testid="stDataFrame"] {{
+            overflow-x: auto;
+        }}
+
+        /* Make buttons easier to tap */
+        .stButton button {{
+            min-height: 44px; 
+        }}
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -438,6 +462,10 @@ with st.sidebar:
     try: st.image(LOGO_FILENAME, width=200)
     except: st.header(APP_NAME)
     st.caption(f"CONNECTED: {st.session_state.company_id.upper()}")
+    
+    # Theme toggle tucked into the sidebar
+    st.toggle("☀️ Light Mode", key="theme_toggle")
+    
     if st.button("LOGOUT", use_container_width=True): 
         st.session_state.logged_in = False
         st.rerun()
@@ -638,7 +666,8 @@ if page == "🏠 Dashboard":
                             folium.PolyLine(r_data['points'], color=r_data['color'], weight=4, opacity=0.7, tooltip=f"To {r_data['name']}: {r_data['dist_text']} ({r_data['dur_text']})").add_to(m)
             m.fit_bounds([[t['lat'], t['lon']]])
 
-        st_folium(m, width=None, height=600, key="map_dashboard", returned_objects=[])
+        # Made map height smaller and container fluid for mobile
+        st_folium(m, use_container_width=True, height=450, key="map_dashboard", returned_objects=[])
 
     with col_sched:
         c_head, c_filt = st.columns([3, 2])
