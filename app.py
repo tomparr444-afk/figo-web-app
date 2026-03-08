@@ -46,7 +46,7 @@ if 'selected_customer' not in st.session_state: st.session_state.selected_custom
 if 'recent_customers' not in st.session_state: st.session_state.recent_customers = []
 if 'main_menu' not in st.session_state: st.session_state.main_menu = "🏠 Dashboard"
 if 'cust_draft' not in st.session_state: 
-    st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": ""}
+    st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": "", "voip": 0, "handsets": 0, "software": 0, "total_lic": 0}
 
 # --- AUTH ---
 def check_login(username, password):
@@ -106,10 +106,10 @@ st.markdown(f"""
     [data-testid="stSidebar"] .stRadio label p {{ font-size: 1.15rem !important; font-weight: 500; padding: 5px 0px; }}
     
     /* Text Inputs */
-    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {{
+    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea, .stNumberInput input {{
         background-color: {card_bg}; color: {text_color}; border: 1px solid {border_color}; border-radius: 4px;
     }}
-    .stTextInput input:focus, .stTextArea textarea:focus {{ border-color: #00ADB5; }}
+    .stTextInput input:focus, .stTextArea textarea:focus, .stNumberInput input:focus {{ border-color: #00ADB5; }}
     
     /* Standard Buttons (Fixed for Light/Dark) */
     .stButton button {{ 
@@ -208,8 +208,12 @@ def fetch_company_info_ai(company_name, postcode):
     "email" (string, best guess generic contact email),
     "phone" (string, best guess contact number),
     "registration_number" (string, UK Companies House number),
-    "offices" (string, list of addresses or locations).
-    If you don't know a field, leave it as an empty string. DO NOT include markdown backticks around the JSON.
+    "offices" (string, list of addresses or locations),
+    "voip" (int, best guess or 0),
+    "handsets" (int, best guess or 0),
+    "software" (int, best guess or 0),
+    "total_lic" (int, best guess or 0).
+    If you don't know a field, leave it as an empty string or 0 for ints. DO NOT include markdown backticks around the JSON.
     """
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -279,7 +283,7 @@ def get_jobs(company_id):
     if not supabase: return []
     try:
         res = supabase.table("Jobs").select("*").eq("Company_ID", company_id).execute()
-        return [{'id': r['id'], 'ref': r.get('Job_Ref'), 'lat': r['Latitude'], 'lon': r['Longitude'], 'desc': r.get('Description', ''), 'director': r.get('Director_Name', ''), 'severity': r.get('severity') or 'Low', 'customer': r.get('Customer_Name', '')} for r in res.data if r.get('Latitude') and r.get('Longitude')]
+        return [{'id': r['id'], 'ref': r.get('Job_Ref'), 'lat': r['Latitude'], 'lon': r['Longitude'], 'desc': r.get('Description', ''), 'director': r.get('Director_Name', ''), 'severity': r.get('severity') or 'Low', 'customer': r.get('Customer_Name', ''), 'status': r.get('status', 'Pending')} for r in res.data if r.get('Latitude') and r.get('Longitude')]
     except: return []
 
 def get_installs(company_id):
@@ -364,6 +368,7 @@ def add_entry(table, name_col, name_val, postcode, company_id, desc=None, direct
                 payload["status"] = "Active"
                 if pin_color: payload["pin_color"] = pin_color
             elif table == "Jobs":
+                payload["status"] = "Pending"
                 if desc: payload["Description"] = desc 
                 if director: payload["Director_Name"] = director
                 if severity: payload["severity"] = severity
@@ -465,6 +470,10 @@ with st.sidebar:
         "⬆️ Data Upload"
     ], label_visibility="collapsed", key="main_menu")
     
+    # Override page if a customer is selected via quick search
+    if st.session_state.selected_customer:
+        page = "👥 Customers"
+    
     st.markdown("---")
     if st.session_state.is_admin:
         try:
@@ -478,14 +487,15 @@ if page == "🏠 Dashboard":
     st.title("Operations Dashboard")
     
     # Top Metrics
-    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1, mc2, mc3, mc4, mc5 = st.columns(5)
     mc1.metric("Active Engineers", len([e for e in engineers if e['status'] in ["Active", "Driving", "On Site"]]))
-    mc2.metric("Open Maintenance", len(jobs))
-    mc3.metric("Pending Installations", len(installs))
+    mc2.metric("Open Maintenance", len([j for j in jobs if j.get('status') != 'Completed']))
+    mc3.metric("Pending Installations", len([i for i in installs if i.get('status') != 'Completed']))
     
     today_str = str(date.today())
     todays_jobs = [s for s in all_schedule if s.get('scheduled_date') == today_str]
     mc4.metric("Jobs Today", len(todays_jobs))
+    mc5.metric("Total Customers", len(customers))
     
     st.divider()
     
@@ -579,6 +589,7 @@ if page == "🏠 Dashboard":
             ).add_to(m)
 
         for job in jobs:
+            if job.get('status') == 'Completed': continue
             popup_content = f"TICKET: {job.get('ref')}\nDESC: {job.get('desc', '')}\nSEVERITY: {job.get('severity')}"
             folium.Marker(
                 [job['lat'], job['lon']],
@@ -587,6 +598,7 @@ if page == "🏠 Dashboard":
             ).add_to(m)
 
         for inst in installs:
+            if inst.get('status') == 'Completed': continue
             folium.Marker(
                 [inst['lat'], inst['lon']],
                 tooltip=f"INSTALL: {inst.get('ref')}", popup=f"TICKET: {inst.get('ref')}\nSTATUS: {inst.get('status')}",
@@ -719,43 +731,21 @@ elif page == "📋 Fleet List":
 # --- PAGE: MAINTENANCE ---
 elif page == "🔧 Maintenance":
     st.title("🔧 Maintenance Jobs")
-    
-    with st.expander("➕ Add New Maintenance Ticket", expanded=False):
-        st.caption("Ticket numbers will be generated automatically (KF2...)")
-        with st.form("maint_add_form"):
-            c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
-            j_cust = st.selectbox("Assign Customer", c_opts)
-            
-            c1, c2 = st.columns(2)
-            j_p = c1.text_input("Postcode")
-            j_desc = c2.text_input("Description (Optional)")
-            
-            j_dir = st.text_input("Director Name (Optional)")
-            j_sev = st.select_slider("Severity", options=["Low", "Medium", "Critical"], value="Low")
-            
-            if st.form_submit_button("Create Maintenance Ticket", type="primary"):
-                if not j_p:
-                    st.error("Postcode is required.")
-                else:
-                    ticket_num = generate_ticket("Maintenance")
-                    ok, m, coords = add_entry("Jobs", "Job_Ref", ticket_num, j_p, st.session_state.company_id, desc=j_desc, director=j_dir, severity=j_sev, customer_name=j_cust)
-                    if ok: 
-                        st.success(f"Ticket Created: {ticket_num}")
-                        if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
-                        time.sleep(3); st.rerun()
-                    else: st.error("Failed to create ticket")
-    st.divider()
 
-    if jobs:
-        h1, h2, h3, h4, h5 = st.columns([2, 3, 2, 2, 1])
+    active_jobs = [j for j in jobs if j.get('status') != 'Completed']
+    comp_jobs = [j for j in jobs if j.get('status') == 'Completed']
+
+    st.subheader("Active Tickets")
+    if active_jobs:
+        h1, h2, h3, h4, h5 = st.columns([2, 3, 2, 2, 2])
         h1.markdown("**Ticket No.**")
         h2.markdown("**Description / Customer**")
         h3.markdown("**Director**")
         h4.markdown("**Severity**")
         h5.markdown("**Action**")
         st.divider()
-        for j in jobs:
-            c1, c2, c3, c4, c5 = st.columns([2, 3, 2, 2, 1])
+        for j in active_jobs:
+            c1, c2, c3, c4, c5 = st.columns([2, 3, 2, 2, 2])
             c1.write(j['ref'])
             desc_text = j.get('desc', '')
             if j.get('customer'): desc_text += f" (Cust: {j['customer']})"
@@ -764,50 +754,46 @@ elif page == "🔧 Maintenance":
             sev = j.get('severity') or 'Low'
             color = "green" if "low" in sev.lower() else "orange" if "medium" in sev.lower() else "red"
             c4.markdown(f":{color}[{sev}]")
-            if c5.button("Delete", key=f"del_{j['id']}", type="primary", help="Cancels job and removes from diary"):
-                if delete_record("Jobs", j['id'], j['ref'], "job_ref"):
-                    st.success("Deleted & Cancelled!")
-                    time.sleep(0.5); st.rerun()
-    else: st.info("No active jobs found.")
+            
+            with c5:
+                btn_col1, btn_col2 = st.columns(2)
+                if btn_col1.button("✅", key=f"comp_m_{j['id']}", help="Mark Complete"):
+                    supabase.table("Jobs").update({"status": "Completed"}).eq("id", j['id']).execute()
+                    st.rerun()
+                if btn_col2.button("🗑️", key=f"del_m_{j['id']}", help="Delete Ticket"):
+                    if delete_record("Jobs", j['id'], j['ref'], "job_ref"):
+                        st.rerun()
+    else: st.info("No active maintenance tickets.")
+
+    st.divider()
+    with st.expander("✅ Completed Records", expanded=False):
+        if comp_jobs:
+            for j in comp_jobs:
+                c1, c2, c3 = st.columns([2, 5, 1])
+                c1.write(f"**{j['ref']}**")
+                c2.write(f"{j.get('customer', 'Unknown')} - Completed")
+                if c3.button("Delete", key=f"del_comp_m_{j['id']}"):
+                    if delete_record("Jobs", j['id'], j['ref'], "job_ref"):
+                        st.rerun()
+        else:
+            st.caption("No completed records.")
 
 # --- PAGE: INSTALLATIONS ---
 elif page == "🛠️ Installations":
     st.title("🛠️ Installation Tracker")
     
-    with st.expander("➕ Add New Installation Ticket", expanded=False):
-        st.caption("Ticket numbers will be generated automatically (KF1...)")
-        with st.form("inst_add_form"):
-            c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
-            i_cust = st.selectbox("Assign Customer", c_opts)
-            
-            i_c1, i_c2 = st.columns(2)
-            i_pc = i_c1.text_input("Postcode")
-            i_desc = i_c2.text_input("Description (Optional)") 
-            
-            i_dir = st.text_input("Director Name (Optional)") 
-            i_stat = st.select_slider("Status", options=["Not passed Finance", "Passed Finance", "Kit Ordered", "Kit Arrived"], value="Not passed Finance")
-            
-            if st.form_submit_button("Create Installation Ticket", type="primary"):
-                if not i_pc:
-                    st.error("Postcode is required.")
-                else:
-                    ticket_num = generate_ticket("Install")
-                    ok, m, coords = add_entry("Installs", "Install_Ref", ticket_num, i_pc, st.session_state.company_id, install_status=i_stat, desc=i_desc, director=i_dir, customer_name=i_cust)
-                    if ok:
-                        st.success(f"Ticket Created: {ticket_num}")
-                        if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
-                        time.sleep(3); st.rerun()
-                    else: st.error("Failed to create ticket")
-    st.divider()
+    active_inst = [i for i in installs if i.get('status') != 'Completed']
+    comp_inst = [i for i in installs if i.get('status') == 'Completed']
 
-    if installs:
+    st.subheader("Active Installations")
+    if active_inst:
         ih1, ih2, ih3, ih4 = st.columns([2, 2, 4, 1])
         ih1.markdown("**Ticket No.**")
         ih2.markdown("**Details**") 
         ih3.markdown("**Status**")
         ih4.markdown("**Action**")
         st.divider()
-        for inst in installs:
+        for inst in active_inst:
             ic1, ic2, ic3, ic4 = st.columns([2, 2, 4, 1])
             ic1.write(inst['ref'])
             details = f"📍 {inst['postcode']}"
@@ -815,18 +801,30 @@ elif page == "🛠️ Installations":
             if inst.get('desc'): details += f"\n📝 {inst['desc']}"
             ic2.text(details)
             current_status = inst.get('status', 'Not passed Finance')
-            options = ["Not passed Finance", "Passed Finance", "Kit Ordered", "Kit Arrived"]
+            options = ["Not passed Finance", "Passed Finance", "Kit Ordered", "Kit Arrived", "Completed"]
             if current_status not in options: options.insert(0, current_status)
             new_status = ic3.select_slider("Status", options=options, value=current_status, key=f"sl_inst_{inst['id']}", label_visibility="collapsed")
             if new_status != current_status:
                 update_install_status(inst['id'], new_status)
                 st.toast(f"Updated {inst['ref']}")
                 time.sleep(0.5); st.rerun()
-            if ic4.button("Delete", key=f"del_inst_{inst['id']}", type="primary"):
+            if ic4.button("🗑️", key=f"del_inst_{inst['id']}", help="Delete Install"):
                 if delete_record("Installs", inst['id'], inst['ref'], "job_ref"):
-                    st.success("Deleted & Cancelled!")
-                    time.sleep(0.5); st.rerun()
-    else: st.info("No installs active.")
+                    st.rerun()
+    else: st.info("No active installations.")
+
+    st.divider()
+    with st.expander("✅ Completed Records", expanded=False):
+        if comp_inst:
+            for inst in comp_inst:
+                c1, c2, c3 = st.columns([2, 5, 1])
+                c1.write(f"**{inst['ref']}**")
+                c2.write(f"{inst.get('customer', 'Unknown')} - Completed")
+                if c3.button("Delete", key=f"del_comp_i_{inst['id']}"):
+                    if delete_record("Installs", inst['id'], inst['ref'], "job_ref"):
+                        st.rerun()
+        else:
+            st.caption("No completed records.")
 
 # --- PAGE: CUSTOMERS ---
 elif page == "👥 Customers":
@@ -840,8 +838,6 @@ elif page == "👥 Customers":
         with c_right:
             if st.button("⬅️ Back to List", type="primary", use_container_width=True):
                 st.session_state.selected_customer = None
-                if 'quick_search_val' in st.session_state: st.session_state.quick_search_val = ""
-                if 'profile_select_val' in st.session_state: st.session_state.profile_select_val = "-- Select a Customer --"
                 st.rerun()
                 
         # Find customer record
@@ -860,6 +856,13 @@ elif page == "👥 Customers":
                     st.caption("Notes:")
                     st.info(c_data.get('Notes'))
             
+            with st.expander("🛒 Services & Licenses", expanded=True):
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("VoIP Lines", c_data.get('VoIP_Lines', 0))
+                s2.metric("Handsets", c_data.get('Handsets', 0))
+                s3.metric("Software Licenses", c_data.get('Software_Licenses', 0))
+                s4.metric("Total Licenses", c_data.get('Total_Licenses', 0))
+            
             st.divider()
             
             # Historical Data
@@ -873,7 +876,7 @@ elif page == "👥 Customers":
             
             with tab_maint:
                 if c_jobs:
-                    st.dataframe(pd.DataFrame(c_jobs)[['ref', 'desc', 'severity', 'lat', 'lon']], hide_index=True, use_container_width=True)
+                    st.dataframe(pd.DataFrame(c_jobs)[['ref', 'status', 'desc', 'severity', 'lat', 'lon']], hide_index=True, use_container_width=True)
                 else: st.caption("No maintenance records.")
                 
             with tab_inst:
@@ -945,6 +948,10 @@ elif page == "👥 Customers":
                             st.session_state.cust_draft['directors'] = ai_data.get('directors', '')
                             st.session_state.cust_draft['reg_no'] = ai_data.get('registration_number', '')
                             st.session_state.cust_draft['offices'] = ai_data.get('offices', '')
+                            st.session_state.cust_draft['voip'] = ai_data.get('voip', 0)
+                            st.session_state.cust_draft['handsets'] = ai_data.get('handsets', 0)
+                            st.session_state.cust_draft['software'] = ai_data.get('software', 0)
+                            st.session_state.cust_draft['total_lic'] = ai_data.get('total_lic', 0)
                             st.success("Information found! Review and save below.")
                         else:
                             st.warning("Could not automatically retrieve data. Please fill manually below.")
@@ -964,6 +971,14 @@ elif page == "👥 Customers":
             c_reg = c6.text_input("Business Registration Number", value=st.session_state.cust_draft.get('reg_no', ''))
             
             c_offices = st.text_area("Multiple Offices / Addresses", value=st.session_state.cust_draft.get('offices', ''))
+            
+            st.markdown("##### 🛒 Services Sold")
+            s1, s2, s3, s4 = st.columns(4)
+            s_voip = s1.number_input("VoIP Lines", min_value=0, value=int(st.session_state.cust_draft.get('voip', 0)))
+            s_handsets = s2.number_input("Handsets", min_value=0, value=int(st.session_state.cust_draft.get('handsets', 0)))
+            s_soft = s3.number_input("Software Licenses", min_value=0, value=int(st.session_state.cust_draft.get('software', 0)))
+            s_total = s4.number_input("Total Licenses", min_value=0, value=int(st.session_state.cust_draft.get('total_lic', 0)))
+
             c_notes = st.text_area("Customer Notes", value=st.session_state.cust_draft.get('notes', ''))
             
             if st.form_submit_button("Save Customer", type="primary"):
@@ -974,13 +989,15 @@ elif page == "👥 Customers":
                         supabase.table("Customers").insert({
                             "Company_ID": st.session_state.company_id,
                             "Name": c_name, "Postcode": c_pc, "Email": c_email, "Phone": c_phone,
-                            "Directors": c_directors, "Registration_Number": c_reg, "Offices": c_offices, "Notes": c_notes
+                            "Directors": c_directors, "Registration_Number": c_reg, "Offices": c_offices, 
+                            "VoIP_Lines": s_voip, "Handsets": s_handsets, "Software_Licenses": s_soft, "Total_Licenses": s_total,
+                            "Notes": c_notes
                         }).execute()
                         st.success("Customer saved successfully!")
-                        st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": ""}
+                        st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": "", "voip": 0, "handsets": 0, "software": 0, "total_lic": 0}
                         time.sleep(1); st.rerun()
                     except Exception as e:
-                        st.error(f"Error saving customer. Make sure all columns exist in your Supabase 'Customers' table. Error: {e}")
+                        st.error(f"Error saving customer. Ensure columns VoIP_Lines, Handsets, Software_Licenses, Total_Licenses (int8) exist. Error: {e}")
 
 # --- PAGE: SCHEDULE WORK ---
 elif page == "📅 Schedule Work":
@@ -996,7 +1013,7 @@ elif page == "📅 Schedule Work":
         with st.expander("🔧 Maintenance", expanded=True):
             with st.form("schedule_maint_form"):
                 m_eng = st.selectbox("Engineer", eng_names, key="m_eng")
-                maint_options = [j['ref'] for j in jobs] if jobs else []
+                maint_options = [j['ref'] for j in jobs if j.get('status') != 'Completed'] if jobs else []
                 m_ref = st.selectbox("Maintenance Ticket", maint_options, index=None, placeholder="Select Ticket...", key="m_ref")
                 m_notes = st.text_area("Notes", key="m_notes")
                 if st.form_submit_button("Assign Maintenance", type="primary"):
@@ -1008,7 +1025,7 @@ elif page == "📅 Schedule Work":
         with st.expander("🛠️ Installation", expanded=False):
             with st.form("schedule_install_form"):
                 i_eng = st.selectbox("Engineer", eng_names, key="i_eng")
-                inst_options = [i['ref'] for i in installs] if installs else []
+                inst_options = [i['ref'] for i in installs if i.get('status') != 'Completed'] if installs else []
                 i_ref = st.selectbox("Installation Ticket", inst_options, index=None, placeholder="Select Ticket...", key="i_ref")
                 i_notes = st.text_area("Notes", key="i_notes")
                 if st.form_submit_button("Assign Installation", type="primary"):
@@ -1115,30 +1132,39 @@ elif page == "⬆️ Data Upload":
         with col_j:
             st.subheader("New Job or Install")
             st.caption("Ticket numbers will be generated automatically (KF1 for Installs, KF2 for Maintenance)")
-            with st.form("add_job_form"):
-                j_type = st.radio("Type", ["Maintenance", "Installation"])
-                c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
-                j_cust = st.selectbox("Assign Customer", c_opts)
-                
-                j_p = st.text_input("Postcode")
-                j_desc = st.text_input("Description (Optional)")
-                j_dir = st.text_input("Director Name (Optional)")
-                j_sev = st.select_slider("Severity", options=["Low", "Medium", "Critical"], value="Low")
-                
-                if st.form_submit_button("Create Ticket", type="primary"):
-                    if not j_p:
-                        st.error("Postcode is required.")
-                    else:
-                        target_table = "Jobs" if j_type == "Maintenance" else "Installs"
-                        ref_col = "Job_Ref" if j_type == "Maintenance" else "Install_Ref"
-                        ticket_num = generate_ticket("Maintenance" if j_type == "Maintenance" else "Install")
-                        
-                        ok, m, coords = add_entry(target_table, ref_col, ticket_num, j_p, st.session_state.company_id, desc=j_desc, director=j_dir, severity=j_sev, customer_name=j_cust)
-                        if ok: 
-                            st.success(f"Ticket Created: {ticket_num}")
-                            if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
-                            time.sleep(3); st.rerun()
-                        else: st.error("Failed to create ticket")
+            
+            j_type = st.radio("Type", ["Maintenance", "Installation"])
+            c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
+            j_cust = st.selectbox("Assign Customer", c_opts)
+            
+            # Auto-fill logic when customer is selected
+            default_pc = ""
+            default_dir = ""
+            if j_cust != "None":
+                cust_data = next((c for c in customers if c['Name'] == j_cust), None)
+                if cust_data:
+                    default_pc = cust_data.get('Postcode', '')
+                    default_dir = cust_data.get('Directors', '')
+
+            j_p = st.text_input("Postcode", value=default_pc)
+            j_desc = st.text_input("Description (Optional)")
+            j_dir = st.text_input("Director Name (Optional)", value=default_dir)
+            j_sev = st.select_slider("Severity", options=["Low", "Medium", "Critical"], value="Low")
+            
+            if st.button("Create Ticket", type="primary"):
+                if not j_p:
+                    st.error("Postcode is required.")
+                else:
+                    target_table = "Jobs" if j_type == "Maintenance" else "Installs"
+                    ref_col = "Job_Ref" if j_type == "Maintenance" else "Install_Ref"
+                    ticket_num = generate_ticket("Maintenance" if j_type == "Maintenance" else "Install")
+                    
+                    ok, m, coords = add_entry(target_table, ref_col, ticket_num, j_p, st.session_state.company_id, desc=j_desc, director=j_dir, severity=j_sev, customer_name=j_cust)
+                    if ok: 
+                        st.success(f"Ticket Created: {ticket_num}")
+                        if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
+                        time.sleep(3); st.rerun()
+                    else: st.error("Failed to create ticket")
 
     with tab_bulk:
         st.subheader("Upload .xlsx File")
