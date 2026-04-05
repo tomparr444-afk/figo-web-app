@@ -81,7 +81,14 @@ st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     
-    * {{ font-family: 'Inter', sans-serif !important; }}
+    /* Apply font safely without breaking Streamlit icons */
+    html, body, p, h1, h2, h3, h4, h5, h6, label, div[data-testid="stMarkdownContainer"] {{
+        font-family: 'Inter', sans-serif !important;
+    }}
+    /* Specifically protect Streamlit's material icons from being overwritten */
+    .material-symbols-rounded, .material-icons, span[class*="icon"] {{
+        font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+    }}
 
     /* Main Backgrounds */
     .stApp, [data-testid="stHeader"] {{ background-color: {bg_color} !important; }}
@@ -110,7 +117,7 @@ st.markdown(f"""
     .stButton > button {{ 
         background-color: {button_bg} !important; border: 1px solid {border_color} !important; border-radius: 6px; font-weight: 500; transition: all 0.2s ease; 
     }}
-    .stButton > button p {{ color: {button_text} !important; font-weight: 500; }}
+    .stButton > button p {{ color: {button_text} !important; font-weight: 500; font-family: 'Inter', sans-serif !important; }}
     .stButton > button:hover {{ border-color: {primary_btn} !important; transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }}
     .stButton > button:hover p {{ color: {primary_btn} !important; }}
 
