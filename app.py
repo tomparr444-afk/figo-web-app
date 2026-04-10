@@ -10,6 +10,7 @@ from datetime import datetime, date, timedelta
 import requests
 import json
 import random
+import html
 
 # --- CONFIGURATION ---
 APP_NAME = "Micro CRM"
@@ -70,6 +71,10 @@ def update_page_param():
     st.query_params['page'] = st.session_state.main_menu
     st.session_state.selected_customer = None
     if 'quick_search_val' in st.session_state: st.session_state.quick_search_val = "-- Search --"
+
+def safe_html(text):
+    """Sanitizes user input to prevent XSS attacks in custom HTML blocks."""
+    return html.escape(str(text))
 
 # --- THEME CONFIGURATION & CSS ---
 is_light = st.session_state.is_light_mode
@@ -195,7 +200,13 @@ if not st.session_state.logged_in:
     with login_holder.container():
         col1, col2, col3 = st.columns([1, 8, 1])
         with col2:
-            st.markdown(f"<h1 style='text-align: center; margin-top: 100px;'>💼 {APP_NAME} Access</h1>", unsafe_allow_html=True)
+            # Login Logo
+            c_logo1, c_logo2, c_logo3 = st.columns([1, 1, 1])
+            with c_logo2:
+                try: st.image(LOGO_FILENAME, use_container_width=True)
+                except: pass
+                
+            st.markdown(f"<h1 style='text-align: center; margin-top: 10px;'>💼 {APP_NAME} Access</h1>", unsafe_allow_html=True)
             with st.form("login"):
                 user = st.text_input("Username", key="login_username_input")
                 pw = st.text_input("Password", type="password", key="login_password_input")
@@ -220,8 +231,11 @@ if not st.session_state.logged_in:
     st.stop()
 
 # --- TOP BAR / THEME TOGGLE ---
-c1, c2 = st.columns([9, 1])
+c1, c2, c3 = st.columns([8, 1, 1])
 with c2:
+    try: st.image(LOGO_FILENAME, use_container_width=True)
+    except: pass
+with c3:
     st.button("☀️ Light" if not is_light else "🌙 Dark", on_click=toggle_theme, use_container_width=True)
 
 # --- HELPER FUNCTIONS ---
@@ -284,8 +298,12 @@ def fetch_company_info_ai(company_name, postcode):
     "email" (string, best guess generic contact email),
     "phone" (string, best guess contact number),
     "registration_number" (string, UK Companies House number),
-    "offices" (string, list of addresses or locations).
-    If you don't know a field, leave it as an empty string. DO NOT include markdown backticks.
+    "offices" (string, list of addresses or locations),
+    "voip" (int, best guess or 0),
+    "handsets" (int, best guess or 0),
+    "software" (int, best guess or 0),
+    "total_lic" (int, best guess or 0).
+    If you don't know a field, leave it as an empty string or 0 for ints. DO NOT include markdown backticks.
     """
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -380,6 +398,13 @@ def get_customer_timeline(company_id, customer_name):
         return res.data
     except: return []
 
+def get_customer_attachments(company_id, customer_name):
+    if not supabase: return []
+    try:
+        res = supabase.table("customer_attachments").select("*").eq("company_id", company_id).eq("customer_name", customer_name).order('created_at', desc=True).execute()
+        return res.data
+    except: return []
+
 def get_schedule(company_id, start_date=None, end_date=None):
     if not supabase: return []
     try:
@@ -417,6 +442,39 @@ def add_timeline_entry(company_id, customer_name, entry_type, content):
         }).execute()
         return True
     except: return False
+
+def upload_customer_attachment(company_id, customer_name, uploaded_file):
+    if not supabase: return False
+    try:
+        safe_cust_name = "".join([c if c.isalnum() else "_" for c in customer_name])
+        file_path = f"{company_id}/{safe_cust_name}/{int(time.time())}_{uploaded_file.name.replace(' ', '_')}"
+        file_bytes = uploaded_file.getvalue()
+        
+        # Upload to Supabase Storage Bucket
+        supabase.storage.from_("attachments").upload(
+            file=file_bytes,
+            path=file_path,
+            file_options={"content-type": uploaded_file.type}
+        )
+        
+        # Get public URL
+        file_url = supabase.storage.from_("attachments").get_public_url(file_path)
+        
+        # Save metadata to DB
+        supabase.table("customer_attachments").insert({
+            "company_id": company_id,
+            "customer_name": customer_name,
+            "file_name": uploaded_file.name,
+            "file_url": file_url,
+            "created_at": str(datetime.now())
+        }).execute()
+        
+        # Add to timeline automatically
+        add_timeline_entry(company_id, customer_name, "Document Logged", f"Attachment uploaded: {uploaded_file.name}")
+        return True
+    except Exception as e:
+        print(f"File Upload Error: {e}")
+        return False
 
 def update_install_status(install_id, new_status):
     try:
@@ -519,7 +577,6 @@ with st.sidebar:
     if st.button("Sign Out", use_container_width=True): do_logout()
     st.markdown("---")
     
-    # Quick Customer Search
     def quick_search_callback():
         val = st.session_state.quick_search_val
         if val and val != "-- Search --":
@@ -546,7 +603,6 @@ with st.sidebar:
     ]
     if st.session_state.is_admin: menu_options.append("⚙️ Settings")
 
-    # Safe menu selection
     if st.session_state.main_menu not in menu_options: st.session_state.main_menu = menu_options[0]
     
     page = st.radio("MAIN MENU", menu_options, label_visibility="collapsed", key="main_menu", on_change=update_page_param)
@@ -574,7 +630,77 @@ if page == "🏠 Dashboard":
     with col_map:
         st.subheader("Live Dispatch Map")
         
-        # Render Map
+        with st.expander("🔍 Single Visit Routing", expanded=False):
+            with st.form("search"):
+                c1, c2 = st.columns([3,1], vertical_alignment="bottom")
+                with c1: p_code = st.text_input("Target Postcode")
+                with c2: search = st.form_submit_button("Scan", type="primary")
+            
+            if search and p_code:
+                geo = Nominatim(user_agent="microcrm_search_v1", timeout=10)
+                try:
+                    l = geo.geocode(p_code)
+                    if l:
+                        st.session_state.search_result = {'lat': l.latitude, 'lon': l.longitude, 'addr': l.address}
+                        st.session_state.search_active = True
+                        
+                        st.session_state.cached_routes = [] 
+                        working_statuses = ["Active", "Driving", "On Site", "In Office", "Home"]
+                        active_engineers = [e for e in engineers if e['status'] in working_statuses]
+                        
+                        for e in active_engineers:
+                            e['temp_dist'] = haversine(l.longitude, l.latitude, e['lon'], e['lat'])
+                        active_engineers.sort(key=lambda x: x['temp_dist'])
+                        top3 = active_engineers[:3]
+                        
+                        for eng in top3:
+                            route_data = get_google_route(eng['lat'], eng['lon'], l.latitude, l.longitude)
+                            if route_data:
+                                pts, d_text, dur_text = route_data
+                                st.session_state.cached_routes.append({'name': eng['name'], 'points': pts, 'dist_text': d_text, 'dur_text': dur_text, 'color': primary_btn})
+                            else:
+                                st.session_state.cached_routes.append({'name': eng['name'], 'points': None, 'dist_text': f"{eng['temp_dist']:.1f} miles (Direct)", 'dur_text': "N/A", 'color': "orange"})
+                    else: st.error("Location not found")
+                except: st.error("Search Failed")
+
+        with st.expander("🚚 Multiple Visit Routing", expanded=False):
+            c1, c2 = st.columns([3, 1])
+            new_stop = c1.text_input("Add Stop (Postcode)", key="route_input")
+            if c2.button("Add Stop") and new_stop:
+                geo_r = Nominatim(user_agent="microcrm_route_v1")
+                l_r = geo_r.geocode(new_stop)
+                if l_r:
+                    st.session_state.route_stops.append({'addr': new_stop, 'lat': l_r.latitude, 'lon': l_r.longitude})
+                    st.rerun()
+                else: st.error("Invalid Postcode")
+            
+            if st.session_state.route_stops:
+                st.write(f"Stops configured: {len(st.session_state.route_stops)}")
+                st.dataframe(pd.DataFrame(st.session_state.route_stops)[['addr']], hide_index=True, use_container_width=True)
+                start_opts = ["Custom..."] + [e['name'] for e in engineers]
+                start_sel = st.selectbox("Start Point:", start_opts)
+                
+                start_coords = None
+                if start_sel == "Custom...":
+                    start_txt = st.text_input("Custom Start Postcode")
+                    if start_txt:
+                        geo_s = Nominatim(user_agent="microcrm_start")
+                        ls = geo_s.geocode(start_txt)
+                        if ls: start_coords = (ls.latitude, ls.longitude)
+                else:
+                    eng = next((e for e in engineers if e['name'] == start_sel), None)
+                    if eng: start_coords = (eng['lat'], eng['lon'])
+
+                col_btn1, col_btn2 = st.columns(2)
+                if col_btn1.button("Optimize Route", type="primary", use_container_width=True) and start_coords:
+                    optimized = optimize_route(start_coords, st.session_state.route_stops)
+                    st.session_state.optimized_route = {'start': start_coords, 'path': optimized}
+                
+                if col_btn2.button("Clear Route", use_container_width=True):
+                    st.session_state.route_stops = []
+                    if 'optimized_route' in st.session_state: del st.session_state.optimized_route
+                    st.rerun()
+
         m = folium.Map(location=[54.5, -4.0], zoom_start=6, tiles=tiles_style)
 
         for eng in engineers:
@@ -602,6 +728,39 @@ if page == "🏠 Dashboard":
                 icon=folium.Icon(color='purple', icon="wrench", prefix='fa') 
             ).add_to(m)
 
+        if 'optimized_route' in st.session_state:
+            rt = st.session_state.optimized_route
+            current_pos = rt['start']
+            folium.Marker(rt['start'], popup="Start", icon=folium.Icon(color="green", icon="play", prefix='fa')).add_to(m)
+            
+            for idx, stop in enumerate(rt['path']):
+                stop_pos = (stop['lat'], stop['lon'])
+                path_points = get_google_route(current_pos[0], current_pos[1], stop_pos[0], stop_pos[1])
+                
+                if path_points and path_points[0]:
+                    folium.PolyLine(path_points[0], color=primary_btn, weight=5, opacity=0.8, tooltip=f"Leg {idx+1}: {path_points[1]} ({path_points[2]})").add_to(m)
+                else:
+                    folium.PolyLine([current_pos, stop_pos], color="cyan", weight=3, opacity=0.6, dash_array='5, 10', tooltip=f"Leg {idx+1} (Direct)").add_to(m)
+                
+                folium.Marker(stop_pos, icon=folium.DivIcon(html=f"<div style='font-size: 16pt; color: {primary_btn}; font-weight: 900; text-shadow: 2px 2px #fff;'>{str(idx + 1)}</div>")).add_to(m)
+                current_pos = stop_pos
+
+        if st.session_state.search_active and st.session_state.search_result:
+            t = st.session_state.search_result
+            folium.Marker([t['lat'], t['lon']], icon=folium.Icon(color="red", icon="crosshairs", prefix='fa')).add_to(m)
+            
+            if st.session_state.cached_routes:
+                with st.container():
+                    st.markdown("##### Nearest Active Engineers")
+                    cc1, cc2, cc3 = st.columns(3)
+                    for i, r_data in enumerate(st.session_state.cached_routes):
+                        col = [cc1, cc2, cc3][i] if i < 3 else None
+                        if col:
+                            col.info(f"**{r_data['name']}**\n\n🛣️ {r_data['dist_text']} \n\n⏱️ {r_data['dur_text']}")
+                        if r_data['points']:
+                            folium.PolyLine(r_data['points'], color=r_data['color'], weight=4, opacity=0.7, tooltip=f"To {r_data['name']}: {r_data['dist_text']} ({r_data['dur_text']})").add_to(m)
+            m.fit_bounds([[t['lat'], t['lon']]])
+
         st_folium(m, use_container_width=True, height=500, key="map_dashboard", returned_objects=[])
 
     with col_sched:
@@ -616,23 +775,20 @@ if page == "🏠 Dashboard":
             current_day = start_of_week + timedelta(days=i)
             day_str = current_day.strftime('%Y-%m-%d')
             day_items = [item for item in all_schedule if item.get('scheduled_date') == day_str]
-            # Find approved holidays for this day
             day_hols = [h for h in all_holidays if h.get('status') == 'Approved' and h.get('start_date') <= day_str <= h.get('end_date')]
             
             with st.expander(f"{days_names[i]} - {current_day.strftime('%d/%m')}", expanded=(current_day == date.today() or bool(day_items) or bool(day_hols))):
                 if not day_items and not day_hols:
                     st.caption("No appointments.")
                 
-                # Show Holidays First
                 for hol in day_hols:
                     st.markdown(f"""
                     <div class="schedule-card holiday">
-                        <small style="opacity: 0.8;"><b>{hol['engineer_name']}</b></small><br>
+                        <small style="opacity: 0.8;"><b>{safe_html(hol['engineer_name'])}</b></small><br>
                         <span style="font-size: 0.95em;">🌴 On Annual Leave</span>
                     </div>
                     """, unsafe_allow_html=True)
 
-                # Show Jobs
                 for item in day_items:
                     note_text = str(item.get('notes', ''))
                     if "[INSTALL]" in note_text: css_class = "install"
@@ -644,8 +800,8 @@ if page == "🏠 Dashboard":
                     
                     st.markdown(f"""
                     <div class="schedule-card {css_class}">
-                        <small style="opacity: 0.8;"><b>{item['engineer_name']}</b></small><br>
-                        <span style="font-size: 0.95em;">{content}</span>
+                        <small style="opacity: 0.8;"><b>{safe_html(item['engineer_name'])}</b></small><br>
+                        <span style="font-size: 0.95em;">{safe_html(content)}</span>
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -740,33 +896,34 @@ elif page == "📋 Fleet List":
 elif page == "🔧 Maintenance":
     st.title("Maintenance Tickets")
 
-    c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
-    j_cust = st.selectbox("Link to Customer Account (Optional)", c_opts, key="maint_add_cust")
-    
-    default_pc, default_dir = "", ""
-    if j_cust != "None":
-        cust_data = next((c for c in customers if c['Name'] == j_cust), None)
-        if cust_data:
-            default_pc = cust_data.get('Postcode', '')
-            default_dir = cust_data.get('Directors', '') if B_TYPE == 'B2B' else cust_data.get('Name', '')
+    with st.expander("➕ Create Maintenance Ticket", expanded=False):
+        c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
+        j_cust = st.selectbox("Link to Customer Account (Optional)", c_opts, key="maint_add_cust")
+        
+        default_pc, default_dir = "", ""
+        if j_cust != "None":
+            cust_data = next((c for c in customers if c['Name'] == j_cust), None)
+            if cust_data:
+                default_pc = cust_data.get('Postcode', '')
+                default_dir = cust_data.get('Directors', '') if B_TYPE == 'B2B' else cust_data.get('Name', '')
 
-    c1, c2 = st.columns(2)
-    j_p = c1.text_input("Postcode", value=default_pc, key="maint_add_pc")
-    j_desc = c2.text_input("Description / Notes", key="maint_add_desc")
-    
-    j_dir = st.text_input("Contact Person / Lead", value=default_dir, key="maint_add_dir")
-    j_sev = st.select_slider("Priority Level", options=["Low", "Medium", "Critical"], value="Low", key="maint_add_sev")
-    
-    if st.button("Generate Maintenance Ticket", type="primary"):
-        if not j_p: st.error("Postcode is required for routing.")
-        else:
-            ticket_num = generate_ticket("Maintenance")
-            ok, m, coords = add_entry("Jobs", "Job_Ref", ticket_num, j_p, C_ID, desc=j_desc, director=j_dir, severity=j_sev, customer_name=j_cust)
-            if ok: 
-                st.success(f"Ticket Created: {ticket_num}")
-                if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
-                time.sleep(2); st.rerun()
-            else: st.error("Failed to generate ticket.")
+        c1, c2 = st.columns(2)
+        j_p = c1.text_input("Postcode", value=default_pc, key="maint_add_pc")
+        j_desc = c2.text_input("Description / Notes", key="maint_add_desc")
+        
+        j_dir = st.text_input("Contact Person / Lead", value=default_dir, key="maint_add_dir")
+        j_sev = st.select_slider("Priority Level", options=["Low", "Medium", "Critical"], value="Low", key="maint_add_sev")
+        
+        if st.button("Generate Maintenance Ticket", type="primary"):
+            if not j_p: st.error("Postcode is required for routing.")
+            else:
+                ticket_num = generate_ticket("Maintenance")
+                ok, m, coords = add_entry("Jobs", "Job_Ref", ticket_num, j_p, C_ID, desc=j_desc, director=j_dir, severity=j_sev, customer_name=j_cust)
+                if ok: 
+                    st.success(f"Ticket Created: {ticket_num}")
+                    if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
+                    time.sleep(2); st.rerun()
+                else: st.error("Failed to generate ticket.")
 
     active_jobs = [j for j in jobs if j.get('status') != 'Completed']
     comp_jobs = [j for j in jobs if j.get('status') == 'Completed']
@@ -815,35 +972,36 @@ elif page == "🔧 Maintenance":
 elif page == "🛠️ Installations":
     st.title("Installation Pipeline")
     
-    c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
-    i_cust = st.selectbox("Link to Customer Account", c_opts, key="inst_add_cust")
-    
-    default_pc, default_dir = "", ""
-    if i_cust != "None":
-        cust_data = next((c for c in customers if c['Name'] == i_cust), None)
-        if cust_data:
-            default_pc = cust_data.get('Postcode', '')
-            default_dir = cust_data.get('Directors', '') if B_TYPE == 'B2B' else cust_data.get('Name', '')
+    with st.expander("➕ Create Installation Ticket", expanded=False):
+        c_opts = ["None"] + [c['Name'] for c in customers] if customers else ["None"]
+        i_cust = st.selectbox("Link to Customer Account", c_opts, key="inst_add_cust")
+        
+        default_pc, default_dir = "", ""
+        if i_cust != "None":
+            cust_data = next((c for c in customers if c['Name'] == i_cust), None)
+            if cust_data:
+                default_pc = cust_data.get('Postcode', '')
+                default_dir = cust_data.get('Directors', '') if B_TYPE == 'B2B' else cust_data.get('Name', '')
 
-    i_c1, i_c2 = st.columns(2)
-    i_pc = i_c1.text_input("Postcode", value=default_pc, key="inst_add_pc")
-    i_desc = i_c2.text_input("Project Scope / Notes", key="inst_add_desc") 
-    
-    i_dir = st.text_input("Project Lead", value=default_dir, key="inst_add_dir") 
-    
-    pipe_stages = settings["pipeline_stages"]
-    i_stat = st.select_slider("Initial Stage", options=pipe_stages, value=pipe_stages[0], key="inst_add_stat")
-    
-    if st.button("Generate Installation Ticket", type="primary"):
-        if not i_pc: st.error("Postcode is required.")
-        else:
-            ticket_num = generate_ticket("Install")
-            ok, m, coords = add_entry("Installs", "Install_Ref", ticket_num, i_pc, C_ID, install_status=i_stat, desc=i_desc, director=i_dir, customer_name=i_cust)
-            if ok:
-                st.success(f"Ticket Created: {ticket_num}")
-                if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
-                time.sleep(2); st.rerun()
-            else: st.error("Failed to generate ticket.")
+        i_c1, i_c2 = st.columns(2)
+        i_pc = i_c1.text_input("Postcode", value=default_pc, key="inst_add_pc")
+        i_desc = i_c2.text_input("Project Scope / Notes", key="inst_add_desc") 
+        
+        i_dir = st.text_input("Project Lead", value=default_dir, key="inst_add_dir") 
+        
+        pipe_stages = settings["pipeline_stages"]
+        i_stat = st.select_slider("Initial Stage", options=pipe_stages, value=pipe_stages[0], key="inst_add_stat")
+        
+        if st.button("Generate Installation Ticket", type="primary"):
+            if not i_pc: st.error("Postcode is required.")
+            else:
+                ticket_num = generate_ticket("Install")
+                ok, m, coords = add_entry("Installs", "Install_Ref", ticket_num, i_pc, C_ID, install_status=i_stat, desc=i_desc, director=i_dir, customer_name=i_cust)
+                if ok:
+                    st.success(f"Ticket Created: {ticket_num}")
+                    if coords: st.info(find_nearest_engineer_text(coords[0], coords[1], engineers))
+                    time.sleep(2); st.rerun()
+                else: st.error("Failed to generate ticket.")
 
     active_inst = [i for i in installs if i.get('status') != 'Completed']
     comp_inst = [i for i in installs if i.get('status') == 'Completed']
@@ -943,7 +1101,7 @@ elif page == "👥 Customers":
             
             timeline_data = get_customer_timeline(C_ID, cust_name)
             
-            tab_time, tab_maint, tab_inst, tab_diary = st.tabs(["Timeline Logs", "Maintenance", "Installations", "Scheduling Events"])
+            tab_time, tab_attach, tab_maint, tab_inst, tab_diary = st.tabs(["Timeline Logs", "Attachments", "Maintenance", "Installations", "Scheduling Events"])
             
             with tab_time:
                 with st.expander("➕ Add Timeline Entry"):
@@ -961,10 +1119,41 @@ elif page == "👥 Customers":
                         st.markdown(f"""
                         <div style="border-left: 3px solid {primary_btn}; padding-left: 15px; margin-bottom: 15px;">
                             <small style="color: gray;">{t['created_at'][:16]} - <b>{t['entry_type']}</b></small>
-                            <p style="margin:0;">{t['content']}</p>
+                            <p style="margin:0;">{safe_html(t['content'])}</p>
                         </div>
                         """, unsafe_allow_html=True)
                 else: st.caption("No timeline history.")
+
+            with tab_attach:
+                with st.expander("➕ Upload New Attachment"):
+                    with st.form("upload_attachment_form", clear_on_submit=True):
+                        uploaded_file = st.file_uploader("Select Document or Image", type=["pdf", "png", "jpg", "jpeg", "docx", "xlsx", "csv", "txt"])
+                        if st.form_submit_button("Upload File", type="primary"):
+                            if uploaded_file:
+                                with st.spinner("Uploading to secure storage..."):
+                                    if upload_customer_attachment(C_ID, cust_name, uploaded_file):
+                                        st.success("File uploaded successfully!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("Upload failed. Ensure 'attachments' storage bucket (Public) and 'customer_attachments' table exist in Supabase.")
+                            else:
+                                st.warning("Please select a file to upload.")
+                
+                attachments_data = get_customer_attachments(C_ID, cust_name)
+                if attachments_data:
+                    for att in attachments_data:
+                        st.markdown(f"""
+                        <div style="border: 1px solid {border_color}; padding: 12px; border-radius: 6px; margin-bottom: 10px; background-color: {card_bg}; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong>📄 {safe_html(att['file_name'])}</strong><br/>
+                                <small style="color: gray;">Uploaded: {att['created_at'][:16]}</small>
+                            </div>
+                            <a href="{att['file_url']}" target="_blank" style="background-color: {primary_btn}; color: white; padding: 6px 14px; border-radius: 4px; text-decoration: none; font-size: 0.9em; font-weight: 600;">View File</a>
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.caption("No attachments found for this account.")
 
             with tab_maint:
                 if c_jobs: st.dataframe(pd.DataFrame(c_jobs)[['ref', 'status', 'desc', 'severity']], hide_index=True, use_container_width=True)
@@ -1072,7 +1261,7 @@ elif page == "👥 Customers":
                         st.success("Account registered.")
                         st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": "", "s1": 0, "s2": 0, "s3": 0, "s4": 0}
                         time.sleep(1); st.rerun()
-                    except Exception as e: st.error(f"Registry Error: {e}")
+                    except Exception as e: st.error(f"Registry Error: {e} (Check DB Schema)")
 
 # --- PAGE: SCHEDULE WORK ---
 elif page == "📅 Schedule Work":
@@ -1139,7 +1328,7 @@ elif page == "📅 Schedule Work":
                 for hol in day_hols:
                     st.markdown(f"""
                     <div class="schedule-card holiday">
-                        <small style="opacity: 0.8;"><b>{hol['engineer_name']}</b></small><br>
+                        <small style="opacity: 0.8;"><b>{safe_html(hol['engineer_name'])}</b></small><br>
                         <span style="font-size: 0.95em;">🌴 On Annual Leave</span>
                     </div>
                     """, unsafe_allow_html=True)
@@ -1155,8 +1344,8 @@ elif page == "📅 Schedule Work":
                     
                     st.markdown(f"""
                     <div class="schedule-card {css_class}">
-                        <small style="opacity: 0.7;"><b>{item['engineer_name']}</b></small><br>
-                        <span style="font-size: 0.95em;">{content}</span>
+                        <small style="opacity: 0.7;"><b>{safe_html(item['engineer_name'])}</b></small><br>
+                        <span style="font-size: 0.95em;">{safe_html(content)}</span>
                     </div>
                     """, unsafe_allow_html=True)
 
