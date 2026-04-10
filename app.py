@@ -32,10 +32,10 @@ def init_connection():
     except: return None
 supabase = init_connection()
 
-# --- STATE MANAGEMENT & PERSISTENT LOGIN ---
-# Use query parameters to persist login across page refreshes
+# --- STATE MANAGEMENT & PERSISTENCE ---
+qp = st.query_params
+
 if 'logged_in' not in st.session_state:
-    qp = st.query_params
     if 'session_active' in qp and qp['session_active'] == 'true':
         st.session_state.logged_in = True
         st.session_state.company_id = qp.get('cid', 'demo')
@@ -47,60 +47,45 @@ if 'logged_in' not in st.session_state:
         st.session_state.is_admin = False
         st.session_state.business_type = 'B2B'
 
+if 'is_light_mode' not in st.session_state: 
+    st.session_state.is_light_mode = (qp.get('light_mode', 'false') == 'true')
+
+if 'main_menu' not in st.session_state: 
+    st.session_state.main_menu = qp.get('page', '🏠 Dashboard')
+
 if 'search_result' not in st.session_state: st.session_state.search_result = None
 if 'search_active' not in st.session_state: st.session_state.search_active = False
 if 'route_stops' not in st.session_state: st.session_state.route_stops = []
 if 'cached_routes' not in st.session_state: st.session_state.cached_routes = []
-if 'theme_toggle' not in st.session_state: st.session_state.theme_toggle = True 
 if 'selected_customer' not in st.session_state: st.session_state.selected_customer = None
 if 'recent_customers' not in st.session_state: st.session_state.recent_customers = []
 if 'cust_draft' not in st.session_state: 
     st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": "", "s1": 0, "s2": 0, "s3": 0, "s4": 0}
 
 def toggle_theme():
-    st.session_state.theme_toggle = not st.session_state.theme_toggle
+    st.session_state.is_light_mode = not st.session_state.is_light_mode
+    st.query_params['light_mode'] = str(st.session_state.is_light_mode).lower()
 
-def clear_navigation_lock():
-    """Ensures we can navigate away from the customer profile cleanly"""
+def update_page_param():
+    st.query_params['page'] = st.session_state.main_menu
     st.session_state.selected_customer = None
-    st.session_state.quick_search_val = ""
-
-# --- AUTH ---
-def check_login(username, password):
-    if not supabase: return False
-    if username.lower() == "admin" and password == ADMIN_PASSWORD: 
-        return {"company_id": "admin_demo", "role": "admin", "business_type": "B2B"}
-    try:
-        res = supabase.table("clients").select("*").eq("company_id", username).eq("password", password).execute()
-        if res.data:
-            data = res.data[0]
-            # Safely get roles and business types (default to user and B2B if columns don't exist yet)
-            role = data.get('role', 'user')
-            btype = data.get('business_type', 'B2B')
-            return {"company_id": data['company_id'], "role": role, "business_type": btype}
-    except Exception as e: 
-        print(e)
-        return None
-    return None
-
-def do_logout():
-    st.session_state.logged_in = False
-    st.query_params.clear()
-    st.rerun()
+    if 'quick_search_val' in st.session_state: st.session_state.quick_search_val = "-- Search --"
 
 # --- THEME CONFIGURATION & CSS ---
-is_light = st.session_state.theme_toggle
+is_light = st.session_state.is_light_mode
 
 if is_light:
-    bg_color, text_color, sidebar_bg, card_bg, border_color = "#f9fafb", "#111827", "#ffffff", "#ffffff", "#e5e7eb"
-    button_bg, button_text, primary_btn = "#f3f4f6", "#111827", "#2563eb"
+    # Soft, readable light mode
+    bg_color, text_color, sidebar_bg, card_bg, border_color = "#e2e8f0", "#0f172a", "#f8fafc", "#ffffff", "#cbd5e1"
+    button_bg, button_text, primary_btn = "#f1f5f9", "#0f172a", "#2563eb"
     tiles_style = "CartoDB positron"
 else:
+    # Slate dark mode
     bg_color, text_color, sidebar_bg, card_bg, border_color = "#0f172a", "#f8fafc", "#1e293b", "#1e293b", "#334155"
     button_bg, button_text, primary_btn = "#334155", "#f8fafc", "#3b82f6"
     tiles_style = "CartoDB dark_matter"
 
-# Global CSS Injection 
+# Global CSS Injection (Loaded BEFORE Login screen to prevent flashing)
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -183,6 +168,27 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
+# --- AUTH FUNCTIONS ---
+def check_login(username, password):
+    if not supabase: return False
+    if username.lower() == "admin" and password == ADMIN_PASSWORD: 
+        return {"company_id": "admin_demo", "role": "admin", "business_type": "B2B"}
+    try:
+        res = supabase.table("clients").select("*").eq("company_id", username).eq("password", password).execute()
+        if res.data:
+            data = res.data[0]
+            role = data.get('role', 'user')
+            btype = data.get('business_type', 'B2B')
+            return {"company_id": data['company_id'], "role": role, "business_type": btype}
+    except Exception as e: 
+        print(e)
+    return None
+
+def do_logout():
+    st.session_state.logged_in = False
+    st.query_params.clear()
+    st.rerun()
+
 # --- LOGIN SCREEN ---
 if not st.session_state.logged_in:
     login_holder = st.empty() 
@@ -202,11 +208,11 @@ if not st.session_state.logged_in:
                         st.session_state.is_admin = (auth_data['role'] == 'admin')
                         st.session_state.business_type = auth_data['business_type']
                         
-                        # Set Query Params for persistence
                         st.query_params['session_active'] = 'true'
                         st.query_params['cid'] = auth_data['company_id']
                         st.query_params['role'] = auth_data['role']
                         st.query_params['btype'] = auth_data['business_type']
+                        st.query_params['light_mode'] = str(st.session_state.is_light_mode).lower()
                         
                         login_holder.empty() 
                         st.rerun()
@@ -426,6 +432,72 @@ def delete_record(table, record_id, record_ref=None, ref_col=None):
         return True
     except: return False
 
+def add_entry(table, name_col, name_val, postcode, company_id, desc=None, director=None, severity=None, pin_color=None, install_status=None, customer_name=None):
+    geolocator = Nominatim(user_agent="microcrm_adder_v1")
+    try:
+        loc = geolocator.geocode(postcode)
+        if loc:
+            payload = {
+                name_col: name_val,
+                "Company_ID": company_id,
+                "Latitude": loc.latitude,
+                "Longitude": loc.longitude
+            }
+            if table == "Engineers": 
+                payload["status"] = "Active"
+                if pin_color: payload["pin_color"] = pin_color
+            elif table == "Jobs":
+                payload["status"] = "Pending"
+                if desc: payload["Description"] = desc 
+                if director: payload["Director_Name"] = director
+                if severity: payload["severity"] = severity
+                if customer_name and customer_name != "None": payload["Customer_Name"] = customer_name
+            elif table == "Installs":
+                payload["Postcode"] = postcode 
+                if install_status: payload["status"] = install_status
+                if desc: payload["Description"] = desc
+                if director: payload["Director_Name"] = director
+                if customer_name and customer_name != "None": payload["Customer_Name"] = customer_name
+
+            supabase.table(table).insert(payload).execute()
+            return True, f"Added {name_val}", (loc.latitude, loc.longitude)
+        return False, "Postcode not found", None
+    except Exception as e: 
+        return False, "Error", None
+
+def process_bulk_upload(df, type_flag, company_id):
+    geolocator = Nominatim(user_agent=f"microcrm_bulk_v1")
+    progress_bar = st.progress(0)
+    success_count = 0
+    total = len(df)
+    df.columns = [c.lower() for c in df.columns]
+    for index, row in df.iterrows():
+        try:
+            if type_flag == "user":
+                name_val = row['name']
+                table_target = "Engineers"
+                col_target = "Name"
+            else:
+                name_val = row['ref']
+                table_target = "Jobs"
+                col_target = "Job_Ref"
+            pcode = row['postcode']
+            location = geolocator.geocode(pcode)
+            if location:
+                payload = {
+                    col_target: name_val,
+                    "Company_ID": company_id,
+                    "Latitude": location.latitude,
+                    "Longitude": location.longitude
+                }
+                if type_flag == "user": payload["status"] = "Active"
+                supabase.table(table_target).insert(payload).execute()
+                success_count += 1
+                time.sleep(1)
+        except: pass
+        progress_bar.progress((index + 1) / total)
+    return success_count
+
 # --- LOAD DATA ---
 C_ID = st.session_state.company_id
 B_TYPE = st.session_state.business_type
@@ -474,9 +546,11 @@ with st.sidebar:
     ]
     if st.session_state.is_admin: menu_options.append("⚙️ Settings")
 
-    page = st.radio("MAIN MENU", menu_options, label_visibility="collapsed", key="main_menu", on_change=clear_navigation_lock)
+    # Safe menu selection
+    if st.session_state.main_menu not in menu_options: st.session_state.main_menu = menu_options[0]
     
-    # Override page if a customer is selected via quick search
+    page = st.radio("MAIN MENU", menu_options, label_visibility="collapsed", key="main_menu", on_change=update_page_param)
+    
     if st.session_state.selected_customer:
         page = "👥 Customers"
 
@@ -680,7 +754,6 @@ elif page == "🔧 Maintenance":
     j_p = c1.text_input("Postcode", value=default_pc, key="maint_add_pc")
     j_desc = c2.text_input("Description / Notes", key="maint_add_desc")
     
-    # Adapt wording based on B2B/ST
     j_dir = st.text_input("Contact Person / Lead", value=default_dir, key="maint_add_dir")
     j_sev = st.select_slider("Priority Level", options=["Low", "Medium", "Critical"], value="Low", key="maint_add_sev")
     
@@ -723,7 +796,7 @@ elif page == "🔧 Maintenance":
                 if btn_col1.button("✅", key=f"comp_m_{j['id']}", help="Mark as Completed"):
                     supabase.table("Jobs").update({"status": "Completed"}).eq("id", j['id']).execute()
                     st.rerun()
-                if btn_col2.button("🗑️", key=f"del_m_{j['id']}", help="Delete Ticket"):
+                if btn_col2.button("🗑️", key=f"del_m_{j['id']}", help="Delete Ticket entirely"):
                     if delete_record("Jobs", j['id'], j['ref'], "job_ref"): st.rerun()
     else: st.info("No active maintenance tickets in queue.")
 
@@ -830,7 +903,7 @@ elif page == "👥 Customers":
         c_left, c_right = st.columns([5, 1])
         with c_right:
             if st.button("⬅️ Directory", type="primary", use_container_width=True):
-                st.session_state.selected_customer = None
+                clear_navigation_lock()
                 st.rerun()
                 
         c_data = next((c for c in customers if c['Name'] == cust_name), None)
@@ -846,7 +919,6 @@ elif page == "👥 Customers":
                     col3.markdown(f"**👔 Directors:** {c_data.get('Directors', '-')}")
                     col3.markdown(f"**🏢 Branches:** {c_data.get('Offices', '-')}")
                 else:
-                    # Sole Trader View
                     col1.markdown(f"**📍 Address / Postcode:** `{c_data.get('Postcode', '-')}`")
                     col2.markdown(f"**✉️ Email:** `{c_data.get('Email', '-')}`")
                     col3.markdown(f"**📞 Phone:** `{c_data.get('Phone', '-')}`")
@@ -858,8 +930,6 @@ elif page == "👥 Customers":
             st.subheader("Service Subscriptions")
             s_cols = st.columns(len(settings["services"]))
             for idx, s_name in enumerate(settings["services"]):
-                # Map dynamic names to static DB columns for demo (s1, s2, s3, s4)
-                # In a real app, you'd use a JSONB column for flexible keys.
                 db_val = c_data.get(f's{idx+1}', 0)
                 s_cols[idx].metric(s_name, db_val)
             
@@ -871,7 +941,6 @@ elif page == "👥 Customers":
             c_tickets = [j['ref'] for j in c_jobs] + [i['ref'] for i in c_inst]
             c_sched = [s for s in all_schedule if s.get('job_ref') in c_tickets]
             
-            # --- NEW: Timeline feature ---
             timeline_data = get_customer_timeline(C_ID, cust_name)
             
             tab_time, tab_maint, tab_inst, tab_diary = st.tabs(["Timeline Logs", "Maintenance", "Installations", "Scheduling Events"])
@@ -965,11 +1034,11 @@ elif page == "👥 Customers":
         st.subheader("New Account Registration")
         with st.form("new_customer_form"):
             c1, c2 = st.columns(2)
-            c_name = c1.text_input("Client / Account Name *", value=st.session_state.cust_draft.get('name', ''))
-            c_pc = c2.text_input("Address / Postcode *", value=st.session_state.cust_draft.get('pc', ''))
+            c_name = c1.text_input("Account Name *" if B_TYPE == 'B2B' else "Customer Name *", value=st.session_state.cust_draft.get('name', ''))
+            c_pc = c2.text_input("Main Postcode *" if B_TYPE == 'B2B' else "Address / Postcode *", value=st.session_state.cust_draft.get('pc', ''))
             
             c3, c4 = st.columns(2)
-            c_email = c3.text_input("Email Address", value=st.session_state.cust_draft.get('email', ''))
+            c_email = c3.text_input("Corporate Email" if B_TYPE == 'B2B' else "Email Address", value=st.session_state.cust_draft.get('email', ''))
             c_phone = c4.text_input("Contact Number", value=st.session_state.cust_draft.get('phone', ''))
             
             if B_TYPE == 'B2B':
@@ -984,7 +1053,7 @@ elif page == "👥 Customers":
             s_cols = st.columns(len(settings["services"]))
             input_vals = {}
             for idx, s_name in enumerate(settings["services"]):
-                input_vals[f"s{idx+1}"] = s_cols[idx].number_input(s_name, min_value=0, value=0)
+                input_vals[f"s{idx+1}"] = s_cols[idx].number_input(s_name, min_value=0, value=int(st.session_state.cust_draft.get(f's{idx+1}', 0)))
 
             c_notes = st.text_area("Internal Notes", value=st.session_state.cust_draft.get('notes', ''))
             
@@ -997,14 +1066,13 @@ elif page == "👥 Customers":
                             "Directors": c_directors, "Registration_Number": c_reg, "Offices": c_offices, 
                             "Notes": c_notes
                         }
-                        # Merge dynamic service inputs safely (Requires s1,s2,s3,s4 int8 columns in DB)
                         payload.update(input_vals)
                         
                         supabase.table("Customers").insert(payload).execute()
                         st.success("Account registered.")
                         st.session_state.cust_draft = {"name": "", "pc": "", "email": "", "phone": "", "directors": "", "reg_no": "", "offices": "", "notes": "", "s1": 0, "s2": 0, "s3": 0, "s4": 0}
                         time.sleep(1); st.rerun()
-                    except Exception as e: st.error(f"Registry Error: {e} (Check DB Schema)")
+                    except Exception as e: st.error(f"Registry Error: {e}")
 
 # --- PAGE: SCHEDULE WORK ---
 elif page == "📅 Schedule Work":
@@ -1170,8 +1238,10 @@ elif page == "⚙️ Settings" and st.session_state.is_admin:
         current_svcs = ", ".join(settings["services"])
         new_svcs = st.text_area("Services (Max 4)", value=current_svcs)
         if st.button("Save Services", type="primary"):
-            svc_list = [s.strip() for s in new_svcs.split(",") if s.strip()][:4] # Limit to 4
+            svc_list = [s.strip() for s in new_svcs.split(",") if s.strip()][:4]
+            # Ensure it always has 4 elements to map properly to s1,s2,s3,s4
+            while len(svc_list) < 4: svc_list.append(f"Service {len(svc_list)+1}")
             try:
                 supabase.table("company_settings").upsert({"company_id": C_ID, "pipeline_stages": settings["pipeline_stages"], "services": svc_list}).execute()
                 st.success("Services updated!"); time.sleep(1); st.rerun()
-            except Exception as e: st.error(f"Error (Does 'company_settings' table exist?): {e}")
+            except Exception as e: st.error(f"Error: {e}")
